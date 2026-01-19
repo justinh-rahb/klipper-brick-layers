@@ -585,7 +585,7 @@ Since you're building Bambu-Moonraker bridge:
 
 ### BrickLayers
 - GitHub: https://github.com/GeekDetour/BrickLayers
-- Hackaday Article: https://hackaday.com/2025/01/23/brick-layer-post-processor
+- Hackaday Article: https://hackaday.com/2025/01/23/brick-layer-post-processor-promising-stronger-3d-prints-now-available/
 
 ### Klipper Module Examples
 - gcode_move.py: Movement transformation

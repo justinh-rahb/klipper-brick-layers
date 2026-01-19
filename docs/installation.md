@@ -12,7 +12,7 @@
 
 ```bash
 cd ~/
-git clone https://github.com/yourusername/klipper-brick-layers
+git clone https://github.com/justinh-rahb/klipper-brick-layers
 cd klipper-brick-layers
 ```
 
