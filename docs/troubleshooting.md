@@ -34,7 +34,7 @@
 **Symptom:** Printer pauses or stutters during prints
 
 **Solutions:**
-1. Disable file preprocessing (TODO: add config option)
+1. Ensure the print file is located on the virtual SD card.
 2. Reduce system load (close other services)
 3. Upgrade to faster Pi (Pi 4 recommended)
 

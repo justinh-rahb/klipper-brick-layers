@@ -22,9 +22,14 @@ def validate_gcode(filepath):
     has_type_comments = False
     type_comments = set()
     layer_count = 0
+    line_count = 0
+    transform_moves = 0
+    current_type = None
+    feature_lines = {} # type -> first line found
     
     with open(filepath, 'r') as f:
         for line in f:
+            line_count += 1
             line = line.strip()
             
             if ';LAYER_CHANGE' in line:
@@ -35,9 +40,16 @@ def validate_gcode(filepath):
                 has_type_comments = True
                 comment_type = line.split(':', 1)[1].strip()
                 type_comments.add(comment_type)
+                current_type = comment_type
+                if comment_type not in feature_lines:
+                    feature_lines[comment_type] = line_count
+            
+            if line.startswith('G1') and current_type and 'inner' in current_type.lower():
+                transform_moves += 1
     
     # Report findings
     print("📊 Validation Results:")
+    print(f"  Total lines analyzed: {line_count}")
     print(f"  Layer changes found: {'✅ Yes' if has_layer_change else '❌ No'}")
     print(f"  Layer count: {layer_count}")
     print(f"  TYPE comments found: {'✅ Yes' if has_type_comments else '❌ No'}")
@@ -45,16 +57,17 @@ def validate_gcode(filepath):
     if type_comments:
         print(f"\n  Detected feature types:")
         for t in sorted(type_comments):
-            print(f"    - {t}")
+            line_info = f"(first seen at L{feature_lines[t]})"
+            print(f"    - {t:<20} {line_info}")
     
+    print(f"\n  Transform points estimate: {transform_moves}")
     print()
     
     # Determine compatibility
     if has_layer_change and has_type_comments:
         print("✅ G-code is compatible with BrickLayers!")
-        has_inner_wall = any('inner' in t.lower() for t in type_comments)
-        if has_inner_wall:
-            print("✅ Inner wall perimeters detected")
+        if transform_moves > 0:
+            print(f"✅ Found {transform_moves} potential transform points")
         else:
             print("⚠️  No inner walls detected - check wall count in slicer")
         return True

@@ -48,7 +48,7 @@ require_slicer_comments: True   # Require TYPE comments
 
 ## Advanced Options
 
-(TODO: Document advanced options as implemented)
+Currently, BrickLayers focus on the core interlocking pattern. Additional geometric detection and multi-axis transforms are planned for future releases.
 
 ## Slicer-Specific Settings
 
@@ -59,4 +59,4 @@ No special settings required - TYPE comments are automatic.
 Install "Display Info on LCD" plugin to add TYPE comments.
 
 ### Simplify3D
-(TODO: Document when tested)
+Manual comment insertion is required via post-processing script.
