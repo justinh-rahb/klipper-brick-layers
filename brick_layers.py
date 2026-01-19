@@ -1,7 +1,7 @@
 # Klipper BrickLayers Module
 # Real-time brick layering transformation for improved part strength
-# 
-# Copyright (C) 2025 Justin Nesselrotte <your-email@example.com>
+#
+# Copyright (C) 2025 Justin Hayes
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
