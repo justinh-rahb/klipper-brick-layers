@@ -1,0 +1,32 @@
+# Klipper BrickLayers - Example Configuration
+# Add this to your printer.cfg file
+
+[brick_layers]
+# Enable at startup (recommended: False, enable manually)
+enabled: False
+
+# Z-offset for brick pattern (in mm)
+# This value alternates positive/negative each layer
+# Typical range: 0.05 - 0.2mm depending on layer height
+z_offset: 0.1
+
+# Extrusion multiplier to compensate for non-planar movement
+# Increase if inner walls appear under-extruded
+# Typical range: 1.0 - 1.1
+extrusion_multiplier: 1.05
+
+# Layer to start brick layering (skip first few layers for bed adhesion)
+# Recommended: 3-5 layers
+start_layer: 3
+
+# Require slicer TYPE comments (recommended: True)
+# Set to False to attempt geometric detection (experimental)
+require_slicer_comments: True
+
+# Optional: Specific feature types to transform
+# Leave commented to use defaults (Inner wall, Inner wall 2, etc.)
+# transform_types: Inner wall, Inner wall 2
+
+# Optional: Exclude specific layers
+# Useful for skipping bridging layers or top surfaces
+# exclude_layers: 1, 2, 100-105
