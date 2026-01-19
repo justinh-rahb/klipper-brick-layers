@@ -17,7 +17,7 @@ BrickLayers improves 3D print strength by applying Z-offset transformations to i
 
 ```bash
 cd ~/
-git clone https://github.com/yourusername/klipper-brick-layers
+git clone https://github.com/justinh-rahb/klipper-brick-layers
 cd klipper-brick-layers
 ./install.sh
 ```
