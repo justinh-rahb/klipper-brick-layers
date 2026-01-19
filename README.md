@@ -104,7 +104,7 @@ GPLv3 - See LICENSE file
 
 Based on the original [BrickLayers post-processor](https://github.com/GeekDetour/BrickLayers) by Everson Siqueira.
 
-Ported to Klipper by Justin Nesselrotte.
+Ported to Klipper by Justin Hayes.
 
 ## ⚠️ Disclaimer
 
