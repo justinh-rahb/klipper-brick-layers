@@ -22,6 +22,7 @@ class BrickLayers:
         extrusion_multiplier: 1.05      # Extrusion compensation factor
         start_layer: 3                  # Start applying after this layer
         require_slicer_comments: True   # Require TYPE comments in G-code
+        verbose: False                  # Log all transformations to console
     """
     
     def __init__(self, config):
@@ -35,6 +36,7 @@ class BrickLayers:
         self.extrusion_multiplier = config.getfloat('extrusion_multiplier', 1.05)
         self.start_layer = config.getint('start_layer', 3)
         self.require_comments = config.getboolean('require_slicer_comments', True)
+        self.verbose = config.getboolean('verbose', False)
         
         # Runtime state
         self.current_layer = 0
@@ -191,20 +193,34 @@ class BrickLayers:
         """Apply brick layer transformation to move parameters"""
         transform_info = self.transform_map.get(self.current_gcode_line, {})
         offset_state = transform_info.get('offset_state', False)
-        
+        layer = transform_info.get('layer', 0)
+        feature_type = transform_info.get('type', 'unknown')
+
         # Apply Z-offset if Z parameter present
         if params['Z'] is not None:
+            original_z = params['Z']
             # Alternate offset based on layer state
             offset = self.z_offset if offset_state else -self.z_offset
             params['Z'] += offset
-            
-            logging.debug(f"BrickLayers: Applied Z-offset {offset:+.3f}mm "
-                          f"at line {self.current_gcode_line}")
-        
+
+            if self.verbose:
+                logging.info(f"BrickLayers: Layer {layer} ({feature_type}) - "
+                             f"Z transform: {original_z:.3f} -> {params['Z']:.3f} "
+                             f"(offset: {offset:+.3f}mm)")
+            else:
+                logging.debug(f"BrickLayers: Applied Z-offset {offset:+.3f}mm "
+                              f"at line {self.current_gcode_line}")
+
         # Apply extrusion multiplier if E parameter present
         if params['E'] is not None:
+            original_e = params['E']
             params['E'] *= self.extrusion_multiplier
-            
+
+            if self.verbose:
+                logging.info(f"BrickLayers: Extrusion adjust: "
+                             f"{original_e:.5f} -> {params['E']:.5f} "
+                             f"(x{self.extrusion_multiplier})")
+
         return params
 
     def _execute_transformed_move(self, params):
