@@ -46,40 +46,23 @@ class TestBrickLayers(unittest.TestCase):
         sample_path = os.path.abspath(os.path.dirname(__file__) + '/sample_gcode/simple.gcode')
         self.bl.start_layer = 1 # Start early for testing
         self.bl._preprocess_gcode_file(sample_path)
-        
+
         # Check if we found transform points
-        # In simple.gcode:
-        # Layer 1 (0.2): Internal moves lines 12-16
-        # Layer 2 (0.4): Internal moves lines 27-31
-        
-        # Wait, let's check line numbers exactly.
-        # Line 1: ; simple.gcode
-        # Line 2: G28
-        # Line 3: ;LAYER_CHANGE
-        # Line 4: ;Z:0.2 (Layer 1)
-        # Line 5: ;TYPE:External perimeter
-        # Line 6: G1 X0 Y0 Z0.2 E0 F3000
-        # Line 7: G1 X10 Y0 E0.5
-        # Line 8: G1 X10 Y10 E1.0
-        # Line 9: G1 X0 Y10 E1.5
-        # Line 10: G1 X0 Y0 E2.0
-        # Line 11: ;TYPE:Inner wall
-        # Line 12: G1 X1 Y1 E2.1  <- Transform!
-        # Line 13: G1 X9 Y1 E2.6  <- Transform!
-        # Line 14: G1 X9 Y9 E3.1  <- Transform!
-        # Line 15: G1 X1 Y9 E3.6  <- Transform!
-        # Line 16: G1 X1 Y1 E4.1  <- Transform!
-        # Line 17: ;LAYER_CHANGE
-        # Line 18: ;Z:0.4 (Layer 2)
-        # ...
-        
-        self.assertIn(12, self.bl.transform_map)
-        self.assertEqual(self.bl.transform_map[12]['layer'], 1)
-        self.assertEqual(self.bl.transform_map[12]['offset_state'], True) # layer 1 >= start_layer 1
-        
-        self.assertIn(27, self.bl.transform_map)
-        self.assertEqual(self.bl.transform_map[27]['layer'], 2)
-        self.assertEqual(self.bl.transform_map[27]['offset_state'], False) # layer 2 toggles it
+        # In simple.gcode, counting G1 commands (not file lines):
+        # G1 #1-5: Layer 1 external perimeter (file lines 6-10)
+        # G1 #6-10: Layer 1 inner wall (file lines 12-16) <- Transform!
+        # G1 #11-15: Layer 2 external perimeter (file lines 20-24)
+        # G1 #16-20: Layer 2 inner wall (file lines 26-30) <- Transform!
+
+        # File line 12 = G1 command #6 (first inner wall of layer 1)
+        self.assertIn(6, self.bl.transform_map)
+        self.assertEqual(self.bl.transform_map[6]['layer'], 1)
+        self.assertEqual(self.bl.transform_map[6]['offset_state'], True) # layer 1 >= start_layer 1
+
+        # File line 27 = G1 command #17 (second inner wall move of layer 2)
+        self.assertIn(17, self.bl.transform_map)
+        self.assertEqual(self.bl.transform_map[17]['layer'], 2)
+        self.assertEqual(self.bl.transform_map[17]['offset_state'], False) # layer 2 toggles it
 
     def test_apply_transform_z(self):
         self.bl.current_gcode_line = 12

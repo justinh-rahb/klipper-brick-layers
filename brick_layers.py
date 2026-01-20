@@ -109,11 +109,24 @@ class BrickLayers:
     def cmd_ENABLE(self, gcmd):
         """Enable brick layering"""
         self.enabled = True
-        gcmd.respond_info("BrickLayers: ENABLED")
-        logging.info("BrickLayers enabled via command")
-        if not self.transform_map and self.sdcard and self.sdcard.file_path:
-            logging.info("BrickLayers: Triggering catch-up preprocessing")
-            self._preprocess_gcode_file(self.sdcard.file_path)
+
+        # Check if we need to preprocess
+        if not self.transform_map:
+            if self.sdcard and self.sdcard.file_path:
+                gcmd.respond_info("BrickLayers: ENABLED - preprocessing G-code...")
+                logging.info("BrickLayers: Triggering catch-up preprocessing")
+                self._preprocess_gcode_file(self.sdcard.file_path)
+                gcmd.respond_info(f"BrickLayers: Found {len(self.transform_map)} "
+                                  f"transform points")
+            else:
+                gcmd.respond_info("BrickLayers: ENABLED (no file loaded, "
+                                  "will preprocess when print starts)")
+        else:
+            gcmd.respond_info(f"BrickLayers: ENABLED "
+                              f"({len(self.transform_map)} transform points ready)")
+
+        logging.info(f"BrickLayers enabled via command - "
+                     f"transform_map size: {len(self.transform_map)}")
     
     def cmd_DISABLE(self, gcmd):
         """Disable brick layering"""
@@ -155,7 +168,11 @@ class BrickLayers:
         if self.current_gcode_line in self.transform_map:
             layer = self.transform_map[self.current_gcode_line].get('layer', 0)
             if layer > self.current_layer:
+                old_layer = self.current_layer
                 self.current_layer = layer
+                if self.verbose:
+                    logging.info(f"BrickLayers: Layer change {old_layer} -> {layer} "
+                                 f"at G1 command #{self.current_gcode_line}")
 
         # Extract parameters
         params = {
@@ -165,13 +182,21 @@ class BrickLayers:
             'E': gcmd.get_float('E', None),
             'F': gcmd.get_float('F', None),
         }
-        
+
         # Check if this move should be transformed
-        if self.enabled and self._should_transform_move():
+        should_transform = self._should_transform_move()
+
+        if self.verbose and self.current_gcode_line <= 5:
+            # Log first few moves for debugging
+            logging.info(f"BrickLayers: G1 #{self.current_gcode_line} - "
+                         f"enabled={self.enabled}, should_transform={should_transform}, "
+                         f"in_map={self.current_gcode_line in self.transform_map}")
+
+        if self.enabled and should_transform:
             # Apply transformation
             params = self._apply_transform(params)
             self.stats_moves_transformed += 1
-            
+
             # Execute modified command
             self._execute_transformed_move(params)
         else:
@@ -283,6 +308,7 @@ class BrickLayers:
         layer = 0
         current_type = None
         line_num = 0
+        g1_command_num = 0  # Count G1 commands specifically
         brick_offset_state = False
         current_z = 0.0
         layer_height = 0.2  # Default, will be updated from G-code
@@ -320,12 +346,6 @@ class BrickLayers:
                             pass
                         continue
 
-                    # Track Z from actual G1 commands (fallback)
-                    if line_stripped.startswith('G1') and 'Z' in line:
-                        z_match = re.search(r'Z([-+]?[0-9]*\.?[0-9]+)', line)
-                        if z_match:
-                            current_z = float(z_match.group(1))
-
                     # Track feature type
                     if ';TYPE:' in line_stripped:
                         try:
@@ -334,32 +354,41 @@ class BrickLayers:
                             pass
                         continue
 
-                    # Mark inner wall moves for transformation
-                    # Note: We look for 'inner' in type to catch 'Inner wall',
-                    # 'Inner wall 2', etc.
-                    is_inner = current_type and 'inner' in current_type.lower()
+                    # Process G1 commands
+                    if line_stripped.startswith('G1'):
+                        g1_command_num += 1
 
-                    if (line_stripped.startswith('G1') and is_inner and
-                        layer >= self.start_layer):
+                        # Track Z from actual G1 commands (fallback)
+                        if 'Z' in line:
+                            z_match = re.search(r'Z([-+]?[0-9]*\.?[0-9]+)', line)
+                            if z_match:
+                                current_z = float(z_match.group(1))
 
-                        # Calculate brick layer Z (half a layer higher)
-                        brick_z = current_z + (layer_height / 2.0)
+                        # Mark inner wall moves for transformation
+                        # Note: We look for 'inner' in type to catch 'Inner wall',
+                        # 'Inner wall 2', etc.
+                        is_inner = current_type and 'inner' in current_type.lower()
 
-                        self.transform_map[line_num] = {
-                            'layer': layer,
-                            'type': current_type,
-                            'offset_state': brick_offset_state,
-                            'current_z': current_z,
-                            'layer_height': layer_height,
-                            'brick_z': brick_z
-                        }
-            
+                        if is_inner and layer >= self.start_layer:
+                            # Calculate brick layer Z (half a layer higher)
+                            brick_z = current_z + (layer_height / 2.0)
+
+                            # KEY FIX: Use g1_command_num instead of line_num
+                            self.transform_map[g1_command_num] = {
+                                'layer': layer,
+                                'type': current_type,
+                                'offset_state': brick_offset_state,
+                                'current_z': current_z,
+                                'layer_height': layer_height,
+                                'brick_z': brick_z
+                            }
+
             elapsed = time.time() - start_time
-            logging.info(f"BrickLayers: Preprocessed {line_num} lines in "
-                         f"{elapsed:.2f}s")
+            logging.info(f"BrickLayers: Preprocessed {line_num} lines "
+                         f"({g1_command_num} G1 commands) in {elapsed:.2f}s")
             logging.info(f"BrickLayers: Found {len(self.transform_map)} "
                          f"transform points")
-            
+
         except Exception as e:
             logging.error(f"BrickLayers: Preprocessing failed: {e}")
             self.transform_map = {}
