@@ -30,6 +30,7 @@ enabled: False                  # Start disabled
 z_offset: 0.1                   # Z-offset in mm
 extrusion_multiplier: 1.05      # Extrusion compensation
 start_layer: 3                  # Begin after layer 3
+verbose: False                  # Log transformations to console
 ```
 
 Restart Klipper: `RESTART`
@@ -57,6 +58,7 @@ See `examples/macros.cfg` for ready-to-use macros.
 | `extrusion_multiplier` | `1.05` | Extrusion compensation factor |
 | `start_layer` | `3` | Layer to start transformations |
 | `require_slicer_comments` | `True` | Require TYPE comments in G-code |
+| `verbose` | `False` | Log all transformations to console |
 
 ## 🎯 Slicer Setup
 
