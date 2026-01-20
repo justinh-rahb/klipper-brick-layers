@@ -150,7 +150,13 @@ class BrickLayers:
         """Intercept and transform G1 commands"""
         self.current_gcode_line += 1
         self.stats_moves_total += 1
-        
+
+        # Update current layer tracking from transform map
+        if self.current_gcode_line in self.transform_map:
+            layer = self.transform_map[self.current_gcode_line].get('layer', 0)
+            if layer > self.current_layer:
+                self.current_layer = layer
+
         # Extract parameters
         params = {
             'X': gcmd.get_float('X', None),
@@ -266,6 +272,8 @@ class BrickLayers:
         """
         import time
         self.transform_map = {}
+        self.current_layer = 0  # Reset layer tracking for new print
+        self.current_gcode_line = 0  # Reset line counter for new print
         layer = 0
         current_type = None
         line_num = 0
