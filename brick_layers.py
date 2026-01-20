@@ -150,7 +150,13 @@ class BrickLayers:
         """Intercept and transform G1 commands"""
         self.current_gcode_line += 1
         self.stats_moves_total += 1
-        
+
+        # Update current layer tracking from transform map
+        if self.current_gcode_line in self.transform_map:
+            layer = self.transform_map[self.current_gcode_line].get('layer', 0)
+            if layer > self.current_layer:
+                self.current_layer = layer
+
         # Extract parameters
         params = {
             'X': gcmd.get_float('X', None),
@@ -195,20 +201,25 @@ class BrickLayers:
         offset_state = transform_info.get('offset_state', False)
         layer = transform_info.get('layer', 0)
         feature_type = transform_info.get('type', 'unknown')
+        brick_z = transform_info.get('brick_z', None)
 
-        # Apply Z-offset if Z parameter present
-        if params['Z'] is not None:
-            original_z = params['Z']
-            # Alternate offset based on layer state
-            offset = self.z_offset if offset_state else -self.z_offset
-            params['Z'] += offset
+        # INJECT Z coordinate for brick layering (even if not originally present!)
+        # This is the key difference from just offsetting existing Z values
+        if brick_z is not None:
+            original_z = params['Z']  # May be None
+
+            # Use the pre-calculated brick layer Z height
+            params['Z'] = brick_z
 
             if self.verbose:
-                logging.info(f"BrickLayers: Layer {layer} ({feature_type}) - "
-                             f"Z transform: {original_z:.3f} -> {params['Z']:.3f} "
-                             f"(offset: {offset:+.3f}mm)")
+                if original_z is not None:
+                    logging.info(f"BrickLayers: Layer {layer} ({feature_type}) - "
+                                 f"Z override: {original_z:.3f} -> {params['Z']:.3f}")
+                else:
+                    logging.info(f"BrickLayers: Layer {layer} ({feature_type}) - "
+                                 f"Z injected: {params['Z']:.3f} (brick layer)")
             else:
-                logging.debug(f"BrickLayers: Applied Z-offset {offset:+.3f}mm "
+                logging.debug(f"BrickLayers: Injected Z={params['Z']:.3f}mm "
                               f"at line {self.current_gcode_line}")
 
         # Apply extrusion multiplier if E parameter present
@@ -265,21 +276,26 @@ class BrickLayers:
         This runs ONCE when print starts
         """
         import time
+        import re
         self.transform_map = {}
+        self.current_layer = 0  # Reset layer tracking for new print
+        self.current_gcode_line = 0  # Reset line counter for new print
         layer = 0
         current_type = None
         line_num = 0
         brick_offset_state = False
-        
+        current_z = 0.0
+        layer_height = 0.2  # Default, will be updated from G-code
+
         logging.info(f"BrickLayers: Preprocessing {filename}")
         start_time = time.time()
-        
+
         try:
             with open(filename, 'r') as f:
                 for line in f:
                     line_num += 1
                     line_stripped = line.strip()
-                    
+
                     # Track layer changes
                     if ';LAYER_CHANGE' in line_stripped:
                         layer += 1
@@ -287,7 +303,29 @@ class BrickLayers:
                         if layer >= self.start_layer:
                             brick_offset_state = not brick_offset_state
                         continue
-                    
+
+                    # Track Z height from comments
+                    if line_stripped.startswith(';Z:'):
+                        try:
+                            current_z = float(line_stripped.split(':')[1])
+                        except (ValueError, IndexError):
+                            pass
+                        continue
+
+                    # Track layer height from comments
+                    if line_stripped.startswith(';HEIGHT:'):
+                        try:
+                            layer_height = float(line_stripped.split(':')[1])
+                        except (ValueError, IndexError):
+                            pass
+                        continue
+
+                    # Track Z from actual G1 commands (fallback)
+                    if line_stripped.startswith('G1') and 'Z' in line:
+                        z_match = re.search(r'Z([-+]?[0-9]*\.?[0-9]+)', line)
+                        if z_match:
+                            current_z = float(z_match.group(1))
+
                     # Track feature type
                     if ';TYPE:' in line_stripped:
                         try:
@@ -295,19 +333,25 @@ class BrickLayers:
                         except IndexError:
                             pass
                         continue
-                    
+
                     # Mark inner wall moves for transformation
-                    # Note: We look for 'inner' in type to catch 'Inner wall', 
+                    # Note: We look for 'inner' in type to catch 'Inner wall',
                     # 'Inner wall 2', etc.
                     is_inner = current_type and 'inner' in current_type.lower()
-                    
-                    if (line_stripped.startswith('G1') and is_inner and 
+
+                    if (line_stripped.startswith('G1') and is_inner and
                         layer >= self.start_layer):
-                        
+
+                        # Calculate brick layer Z (half a layer higher)
+                        brick_z = current_z + (layer_height / 2.0)
+
                         self.transform_map[line_num] = {
                             'layer': layer,
                             'type': current_type,
-                            'offset_state': brick_offset_state
+                            'offset_state': brick_offset_state,
+                            'current_z': current_z,
+                            'layer_height': layer_height,
+                            'brick_z': brick_z
                         }
             
             elapsed = time.time() - start_time
