@@ -83,22 +83,51 @@ class TestBrickLayers(unittest.TestCase):
 
     def test_apply_transform_z(self):
         self.bl.current_gcode_line = 12
-        self.bl.transform_map = {12: {'layer': 1, 'offset_state': True}}
+        # New behavior: brick_z is pre-calculated during preprocessing
+        self.bl.transform_map = {12: {
+            'layer': 1,
+            'offset_state': True,
+            'current_z': 0.2,
+            'layer_height': 0.2,
+            'brick_z': 0.3  # 0.2 + 0.2/2 = 0.3 (half layer higher)
+        }}
         self.bl.z_offset = 0.1
-        
+
         params = {'X': 1, 'Y': 1, 'Z': 0.2, 'E': 0.1, 'F': None}
         transformed = self.bl._apply_transform(params)
+
+        self.assertAlmostEqual(transformed['Z'], 0.3) # brick_z value
         
-        self.assertAlmostEqual(transformed['Z'], 0.3) # 0.2 + 0.1
-        
+    def test_apply_transform_z_injection(self):
+        """Test that Z is injected even when not originally present"""
+        self.bl.current_gcode_line = 12
+        self.bl.transform_map = {12: {
+            'layer': 1,
+            'offset_state': True,
+            'current_z': 0.2,
+            'layer_height': 0.2,
+            'brick_z': 0.3  # 0.2 + 0.2/2 = 0.3
+        }}
+
+        # Original move has NO Z parameter
+        params = {'X': 1, 'Y': 1, 'Z': None, 'E': 0.1, 'F': None}
+        transformed = self.bl._apply_transform(params)
+
+        # Z should be injected!
+        self.assertAlmostEqual(transformed['Z'], 0.3)
+
     def test_apply_transform_e(self):
         self.bl.current_gcode_line = 12
-        self.bl.transform_map = {12: {'layer': 1, 'offset_state': True}}
+        self.bl.transform_map = {12: {
+            'layer': 1,
+            'offset_state': True,
+            'brick_z': 0.3
+        }}
         self.bl.extrusion_multiplier = 1.1
-        
+
         params = {'X': 1, 'Y': 1, 'Z': 0.2, 'E': 1.0, 'F': None}
         transformed = self.bl._apply_transform(params)
-        
+
         self.assertAlmostEqual(transformed['E'], 1.1)
 
 if __name__ == '__main__':
