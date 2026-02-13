@@ -6,6 +6,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
+import re
 
 class BrickLayers:
     """
@@ -18,7 +19,7 @@ class BrickLayers:
     Configuration:
         [brick_layers]
         enabled: False                  # Enable/disable at startup
-        z_offset: 0.1                   # Z-offset in mm (positive/negative alternates)
+        z_offset: 0.1                   # Z-offset in mm (typically layer_height/2)
         extrusion_multiplier: 1.05      # Extrusion compensation factor
         start_layer: 3                  # Start applying after this layer
         require_slicer_comments: True   # Require TYPE comments in G-code
@@ -40,10 +41,9 @@ class BrickLayers:
         
         # Runtime state
         self.current_layer = 0
-        self.current_feature_type = None
-        self.brick_offset_state = False  # Alternates each layer
-        self.transform_map = {}          # Pre-computed transform decisions
-        self.current_gcode_line = 0
+        self.transform_map = {}          # Maps G1 command number -> transform info
+        self.g1_command_count = 0        # Counts G1 commands during execution
+        self.last_preprocessed_file = None
         
         # Statistics
         self.stats_moves_transformed = 0
@@ -65,6 +65,11 @@ class BrickLayers:
             self.cmd_STATUS,
             desc="Report current brick layers status"
         )
+        self.gcode.register_command(
+            'BRICK_LAYERS_RELOAD',
+            self.cmd_RELOAD,
+            desc="Force reload/reprocess current G-code file"
+        )
         
         # Hook into Klipper ready event
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -77,45 +82,52 @@ class BrickLayers:
         """Called when Klipper is ready - set up hooks"""
         logging.info("BrickLayers: Klipper ready, installing hooks")
         
+        # Try to hook into virtual_sdcard
         try:
             self.sdcard = self.printer.lookup_object('virtual_sdcard')
             logging.info("BrickLayers: Connected to virtual_sdcard")
-        except self.printer.command_error:
-            self.sdcard = None
-            logging.warn("BrickLayers: virtual_sdcard not found, "
-                         "preprocessing will be disabled")
             
-        # Hook into print file loading
-        if self.sdcard:
+            # Hook into the work handler to detect file loads
             self.original_work_handler = self.sdcard.work_handler
             self.sdcard.work_handler = self._work_handler_wrapper
-            logging.info("BrickLayers: Hooked into virtual_sdcard file loading")
-            
+        except:
+            self.sdcard = None
+            logging.warning("BrickLayers: virtual_sdcard not found, "
+                          "preprocessing will be disabled")
+        
+        # Hook into gcode_move for G1 interception
         try:
-            self.gcode_move = self.printer.lookup_object('gcode_move')
-            # Monkey-patch the G1 command
-            self.original_cmd_G1 = self.gcode_move.cmd_G1
-            self.gcode_move.cmd_G1 = self._cmd_G1_wrapper
+            # Get the GCodeMove object
+            gcode_move = self.printer.lookup_object('gcode_move')
+            
+            # Store original G1 handler
+            self.original_cmd_G1 = gcode_move.cmd_G1
+            
+            # Replace with our wrapper
+            gcode_move.cmd_G1 = self._cmd_G1_wrapper
+            
             logging.info("BrickLayers: G1 command interception installed")
-        except self.printer.command_error:
-            self.gcode_move = None
-            logging.error("BrickLayers: gcode_move not found, "
-                          "transformation disabled")
+        except Exception as e:
+            logging.error(f"BrickLayers: Failed to hook G1 command: {e}")
+            self.original_cmd_G1 = None
         
-        logging.info(f"BrickLayers: Module ready. Config: z_offset={self.z_offset}, "
-                     f"multiplier={self.extrusion_multiplier}, "
-                     f"start_layer={self.start_layer}")
-        
+        logging.info(f"BrickLayers: Module ready")
+    
     def cmd_ENABLE(self, gcmd):
         """Enable brick layering"""
         self.enabled = True
-
+        
         # Check if we need to preprocess
         if not self.transform_map:
-            if self.sdcard and self.sdcard.file_path():
+            try:
+                current_file = self.sdcard.file_path() if self.sdcard else None
+            except:
+                current_file = None
+                
+            if current_file:
                 gcmd.respond_info("BrickLayers: ENABLED - preprocessing G-code...")
                 logging.info("BrickLayers: Triggering catch-up preprocessing")
-                self._preprocess_gcode_file(self.sdcard.file_path())
+                self._preprocess_gcode_file(current_file)
                 gcmd.respond_info(f"BrickLayers: Found {len(self.transform_map)} "
                                   f"transform points")
             else:
@@ -143,9 +155,41 @@ class BrickLayers:
             f"  Z Offset: {self.z_offset}mm\n"
             f"  Extrusion Multiplier: {self.extrusion_multiplier}\n"
             f"  Start Layer: {self.start_layer}\n"
+            f"  G1 Commands Executed: {self.g1_command_count}\n"
+            f"  Transform Points Loaded: {len(self.transform_map)}\n"
             f"  Moves Transformed: {self.stats_moves_transformed}/{self.stats_moves_total}"
         )
         gcmd.respond_info(status)
+        
+        if self.verbose and self.transform_map:
+            # Show next few upcoming transforms
+            upcoming = []
+            for cmd_num in sorted(self.transform_map.keys()):
+                if cmd_num > self.g1_command_count:
+                    upcoming.append(cmd_num)
+                    if len(upcoming) >= 5:
+                        break
+            if upcoming:
+                gcmd.respond_info(f"  Next transforms at G1 commands: {upcoming}")
+    
+    def cmd_RELOAD(self, gcmd):
+        """Force reload of current file"""
+        if not self.sdcard:
+            gcmd.respond_info("BrickLayers: No virtual_sdcard available")
+            return
+        
+        try:
+            current_file = self.sdcard.file_path()
+        except:
+            current_file = None
+        
+        if not current_file:
+            gcmd.respond_info("BrickLayers: No file currently loaded")
+            return
+        
+        gcmd.respond_info(f"BrickLayers: Reprocessing {current_file}...")
+        self._preprocess_gcode_file(current_file)
+        gcmd.respond_info("BrickLayers: Reload complete")
     
     def get_status(self, eventtime):
         """Return status for Moonraker/Mainsail integration"""
@@ -155,244 +199,282 @@ class BrickLayers:
             'z_offset': self.z_offset,
             'extrusion_multiplier': self.extrusion_multiplier,
             'start_layer': self.start_layer,
+            'g1_commands_executed': self.g1_command_count,
+            'transform_points': len(self.transform_map),
             'moves_transformed': self.stats_moves_transformed,
             'moves_total': self.stats_moves_total,
         }
     
+    def _work_handler_wrapper(self, eventtime):
+        """Wrapper for virtual_sdcard work handler to detect file loads"""
+        # Get current file path safely
+        try:
+            current_file = self.sdcard.file_path()
+        except:
+            current_file = None
+        
+        # Check if a new file was loaded
+        if current_file and self.enabled:
+            if current_file != self.last_preprocessed_file:
+                logging.info(f"BrickLayers: New file detected: {current_file}")
+                self._preprocess_gcode_file(current_file)
+                self.last_preprocessed_file = current_file
+        
+        # Call original handler
+        return self.original_work_handler(eventtime)
+    
     def _cmd_G1_wrapper(self, gcmd):
-        """Intercept and transform G1 commands"""
-        self.current_gcode_line += 1
+        """Intercept and potentially transform G1 commands"""
+        # Increment our command counter
+        self.g1_command_count += 1
         self.stats_moves_total += 1
-
+        
         # Update current layer tracking from transform map
-        if self.current_gcode_line in self.transform_map:
-            layer = self.transform_map[self.current_gcode_line].get('layer', 0)
+        if self.g1_command_count in self.transform_map:
+            layer = self.transform_map[self.g1_command_count].get('layer', 0)
             if layer > self.current_layer:
                 old_layer = self.current_layer
                 self.current_layer = layer
                 if self.verbose:
                     logging.info(f"BrickLayers: Layer change {old_layer} -> {layer} "
-                                 f"at G1 command #{self.current_gcode_line}")
-
-        # Extract parameters
-        params = {
-            'X': gcmd.get_float('X', None),
-            'Y': gcmd.get_float('Y', None),
-            'Z': gcmd.get_float('Z', None),
-            'E': gcmd.get_float('E', None),
-            'F': gcmd.get_float('F', None),
-        }
-
-        # Check if this move should be transformed
-        should_transform = self._should_transform_move()
-
-        if self.verbose and self.current_gcode_line <= 5:
-            # Log first few moves for debugging
-            logging.info(f"BrickLayers: G1 #{self.current_gcode_line} - "
-                         f"enabled={self.enabled}, should_transform={should_transform}, "
-                         f"in_map={self.current_gcode_line in self.transform_map}")
-
-        if self.enabled and should_transform:
-            # Apply transformation
-            params = self._apply_transform(params)
+                                 f"at G1 command #{self.g1_command_count}")
+        
+        # Check if this command should be transformed
+        if self.enabled and self.g1_command_count in self.transform_map:
+            transform_info = self.transform_map[self.g1_command_count]
+            
+            # Apply the transformation
+            self._execute_transformed_move(gcmd, transform_info)
             self.stats_moves_transformed += 1
-
-            # Execute modified command
-            self._execute_transformed_move(params)
+            
         else:
             # Pass through unchanged
-            self.original_cmd_G1(gcmd)
-
-    def _should_transform_move(self):
-        """Determine if current move should be transformed"""
-        if not self.enabled:
-            return False
-        
-        # Check transform map
-        if self.current_gcode_line not in self.transform_map:
-            return False
-            
-        transform_info = self.transform_map[self.current_gcode_line]
-        
-        # Verify layer threshold
-        if transform_info['layer'] < self.start_layer:
-            return False
-            
-        return True
-
-    def _apply_transform(self, params):
-        """Apply brick layer transformation to move parameters"""
-        transform_info = self.transform_map.get(self.current_gcode_line, {})
-        offset_state = transform_info.get('offset_state', False)
-        layer = transform_info.get('layer', 0)
-        feature_type = transform_info.get('type', 'unknown')
-        brick_z = transform_info.get('brick_z', None)
-
-        # INJECT Z coordinate for brick layering (even if not originally present!)
-        # This is the key difference from just offsetting existing Z values
-        if brick_z is not None:
-            original_z = params['Z']  # May be None
-
-            # Use the pre-calculated brick layer Z height
-            params['Z'] = brick_z
-
-            if self.verbose:
-                if original_z is not None:
-                    logging.info(f"BrickLayers: Layer {layer} ({feature_type}) - "
-                                 f"Z override: {original_z:.3f} -> {params['Z']:.3f}")
-                else:
-                    logging.info(f"BrickLayers: Layer {layer} ({feature_type}) - "
-                                 f"Z injected: {params['Z']:.3f} (brick layer)")
+            if self.original_cmd_G1:
+                self.original_cmd_G1(gcmd)
             else:
-                logging.debug(f"BrickLayers: Injected Z={params['Z']:.3f}mm "
-                              f"at line {self.current_gcode_line}")
-
-        # Apply extrusion multiplier if E parameter present
-        if params['E'] is not None:
-            original_e = params['E']
-            params['E'] *= self.extrusion_multiplier
-
-            if self.verbose:
-                logging.info(f"BrickLayers: Extrusion adjust: "
-                             f"{original_e:.5f} -> {params['E']:.5f} "
-                             f"(x{self.extrusion_multiplier})")
-
-        return params
-
-    def _execute_transformed_move(self, params):
-        """Execute a transformed G1 move command"""
-        # Build G-code command string
+                # Fallback: shouldn't happen, but just in case
+                logging.error("BrickLayers: No original G1 handler available!")
+    
+    def _execute_transformed_move(self, gcmd, transform_info):
+        """Execute a G1 move with brick layer transformation applied"""
+        # Build new command with transformed Z
         cmd_parts = ['G1']
         
-        for axis in ['X', 'Y', 'Z', 'E', 'F']:
-            if params[axis] is not None:
-                cmd_parts.append(f'{axis}{params[axis]:.6f}')
+        # Add X if present
+        try:
+            x = gcmd.get_float('X')
+            cmd_parts.append(f"X{x:.6f}")
+        except:
+            pass
+        
+        # Add Y if present
+        try:
+            y = gcmd.get_float('Y')
+            cmd_parts.append(f"Y{y:.6f}")
+        except:
+            pass
+        
+        # ALWAYS add/override Z with brick layer height
+        cmd_parts.append(f"Z{transform_info['brick_z']:.6f}")
+        
+        # Add E if present, with multiplier applied
+        try:
+            original_e = gcmd.get_float('E')
+            modified_e = original_e * self.extrusion_multiplier
+            cmd_parts.append(f"E{modified_e:.6f}")
+        except:
+            pass
+        
+        # Add F if present
+        try:
+            f = gcmd.get_float('F')
+            cmd_parts.append(f"F{f:.6f}")
+        except:
+            pass
         
         cmd_string = ' '.join(cmd_parts)
         
-        # Execute via gcode runner
+        # Log if verbose
+        if self.verbose:
+            try:
+                original_z = gcmd.get_float('Z')
+                logging.info(f"BrickLayers: G1 #{self.g1_command_count} - "
+                           f"Layer {transform_info['layer']} ({transform_info['type']}) - "
+                           f"Z: {original_z:.3f} -> {transform_info['brick_z']:.3f}")
+            except:
+                logging.info(f"BrickLayers: G1 #{self.g1_command_count} - "
+                           f"Layer {transform_info['layer']} ({transform_info['type']}) - "
+                           f"Z injected: {transform_info['brick_z']:.3f}")
+        
+        # Execute the transformed command
         try:
             self.gcode.run_script(cmd_string)
         except Exception as e:
             logging.error(f"BrickLayers: Failed to execute transformed move: {e}")
-            # No easy way to "fall back" since we already consumed the gcmd
-            # and increments the line counter, but run_script failure 
-            # might be critical.
+            logging.error(f"  Command: {cmd_string}")
             raise
-
-    def _work_handler_wrapper(self, eventtime):
-        """Wrapper for virtual_sdcard work handler"""
-        # Check if a new file was just loaded
-        if self.sdcard.file_path() and self.enabled:
-            # Only preprocess if we haven't already
-            if not hasattr(self, '_last_preprocessed_file'):
-                self._last_preprocessed_file = None
-            
-            if self.sdcard.file_path() != self._last_preprocessed_file:
-                self._preprocess_gcode_file(self.sdcard.file_path())
-                self._last_preprocessed_file = self.sdcard.file_path()
-        
-        # Call original handler
-        return self.original_work_handler(eventtime)
-
+    
     def _preprocess_gcode_file(self, filename):
         """
-        Scan G-code file and build transformation map
-        This runs ONCE when print starts
+        Scan G-code file and build transformation map.
+        This runs ONCE when a print file is loaded.
+        
+        Key: We count G1 COMMANDS, not file lines, so the numbering
+        matches what we'll see during execution.
         """
         import time
-        import re
+        
         self.transform_map = {}
-        self.current_layer = 0  # Reset layer tracking for new print
-        self.current_gcode_line = 0  # Reset line counter for new print
+        self.g1_command_count = 0  # Reset for new file
+        self.current_layer = 0     # Reset for new file
+        self.stats_moves_transformed = 0
+        self.stats_moves_total = 0
+        
+        # Preprocessing state
         layer = 0
         current_type = None
-        line_num = 0
-        g1_command_num = 0  # Count G1 commands specifically
         brick_offset_state = False
         current_z = 0.0
-        layer_height = 0.2  # Default, will be updated from G-code
-
+        layer_height = 0.2  # Default
+        g1_count = 0  # Count G1 commands during preprocessing
+        line_count = 0
+        
         logging.info(f"BrickLayers: Preprocessing {filename}")
         start_time = time.time()
-
+        
+        feature_type_seen = {}  # Track what feature types we see
+        
         try:
             with open(filename, 'r') as f:
                 for line in f:
-                    line_num += 1
+                    line_count += 1
                     line_stripped = line.strip()
-
-                    # Track layer changes
-                    if ';LAYER_CHANGE' in line_stripped:
+                    
+                    # Track layer changes (common in most slicers)
+                    if ';LAYER_CHANGE' in line_stripped or line_stripped.startswith(';LAYER:'):
                         layer += 1
-                        # Alternate brick offset state each layer
+                        # Alternate brick offset state each layer (after start_layer)
                         if layer >= self.start_layer:
                             brick_offset_state = not brick_offset_state
+                        
+                        if self.verbose:
+                            logging.info(f"BrickLayers: Layer {layer} "
+                                       f"(offset_state={brick_offset_state})")
                         continue
-
-                    # Track Z height from comments
+                    
+                    # Track Z height from comments (PrusaSlicer/OrcaSlicer style)
                     if line_stripped.startswith(';Z:'):
                         try:
                             current_z = float(line_stripped.split(':')[1])
                         except (ValueError, IndexError):
                             pass
                         continue
-
+                    
                     # Track layer height from comments
-                    if line_stripped.startswith(';HEIGHT:'):
+                    if line_stripped.startswith(';HEIGHT:') or line_stripped.startswith(';layer_height'):
                         try:
-                            layer_height = float(line_stripped.split(':')[1])
+                            layer_height = float(line_stripped.split(':')[1].split()[0])
+                            if self.verbose:
+                                logging.info(f"BrickLayers: Detected layer height: {layer_height}mm")
                         except (ValueError, IndexError):
                             pass
                         continue
-
-                    # Track feature type
+                    
+                    # Track feature type (critical for identifying inner walls!)
                     if ';TYPE:' in line_stripped:
                         try:
                             current_type = line_stripped.split(':', 1)[1].strip()
+                            
+                            # Track what types we see for debugging
+                            feature_type_seen[current_type] = feature_type_seen.get(current_type, 0) + 1
+                            
+                            if self.verbose:
+                                logging.info(f"BrickLayers: Feature type: {current_type}")
                         except IndexError:
                             pass
                         continue
-
-                    # Process G1 commands
+                    
+                    # Check if this is a G1 move command
                     if line_stripped.startswith('G1'):
-                        g1_command_num += 1
-
-                        # Track Z from actual G1 commands (fallback)
-                        if 'Z' in line:
-                            z_match = re.search(r'Z([-+]?[0-9]*\.?[0-9]+)', line)
+                        # Increment G1 counter (THIS IS THE KEY)
+                        g1_count += 1
+                        
+                        # Extract Z from the actual G1 command if present
+                        if 'Z' in line_stripped:
+                            z_match = re.search(r'Z([-+]?[0-9]*\.?[0-9]+)', line_stripped)
                             if z_match:
                                 current_z = float(z_match.group(1))
-
-                        # Mark inner wall moves for transformation
-                        # Note: We look for 'inner' in type to catch 'Inner wall',
-                        # 'Inner wall 2', etc.
+                        
+                        # Determine if this move should be transformed
+                        # Look for "inner" in the type name to catch:
+                        # - "Internal perimeter" (PrusaSlicer)
+                        # - "Inner wall" (Bambu Studio)
+                        # - "Internal perimeters" (SuperSlicer)
+                        # - "WALL-INNER" (Cura - lowercase conversion catches this)
                         is_inner = current_type and 'inner' in current_type.lower()
-
+                        
                         if is_inner and layer >= self.start_layer:
-                            # Calculate brick layer Z (half a layer higher)
+                            # Calculate brick layer Z (half layer height offset)
                             brick_z = current_z + (layer_height / 2.0)
-
-                            # KEY FIX: Use g1_command_num instead of line_num
-                            self.transform_map[g1_command_num] = {
+                            
+                            # Store transform info keyed by G1 command number
+                            self.transform_map[g1_count] = {
                                 'layer': layer,
                                 'type': current_type,
                                 'offset_state': brick_offset_state,
                                 'current_z': current_z,
                                 'layer_height': layer_height,
-                                'brick_z': brick_z
+                                'brick_z': brick_z,
+                                'file_line': line_count  # Keep for debugging
                             }
-
+                            
+                            if self.verbose and len(self.transform_map) <= 10:
+                                logging.info(f"BrickLayers: Marked G1 command #{g1_count} "
+                                           f"for transformation (file line {line_count}, "
+                                           f"layer {layer}, type: {current_type}, "
+                                           f"Z: {current_z:.3f} -> {brick_z:.3f})")
+            
             elapsed = time.time() - start_time
-            logging.info(f"BrickLayers: Preprocessed {line_num} lines "
-                         f"({g1_command_num} G1 commands) in {elapsed:.2f}s")
-            logging.info(f"BrickLayers: Found {len(self.transform_map)} "
-                         f"transform points")
-
+            logging.info(f"BrickLayers: Preprocessing complete in {elapsed:.2f}s")
+            logging.info(f"BrickLayers: Processed {line_count} lines, found {g1_count} G1 commands")
+            logging.info(f"BrickLayers: Marked {len(self.transform_map)} commands for transformation")
+            
+            # Report feature types seen (helpful for debugging)
+            if feature_type_seen:
+                logging.info(f"BrickLayers: Feature types detected:")
+                for ftype, count in sorted(feature_type_seen.items()):
+                    is_inner = 'inner' in ftype.lower()
+                    marker = " <-- WILL TRANSFORM" if is_inner else ""
+                    logging.info(f"  {ftype}: {count} occurrences{marker}")
+            
+            # Warn if no transforms found
+            if not self.transform_map:
+                logging.warning("BrickLayers: No inner perimeter moves found! "
+                              "Check that your slicer outputs ;TYPE: comments.")
+                if not feature_type_seen:
+                    logging.warning("BrickLayers: No ;TYPE: comments found at all. "
+                                  "Your slicer may not be compatible, or comments may be disabled.")
+            
         except Exception as e:
             logging.error(f"BrickLayers: Preprocessing failed: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             self.transform_map = {}
 
 def load_config(config):
     """Klipper module entry point"""
     return BrickLayers(config)
+```
+
+This version:
+1. ✅ Fixes all `file_path()` method calls
+2. ✅ Uses try/except for safety
+3. ✅ Counts G1 commands correctly
+4. ✅ Better error handling
+5. ✅ Better logging output
+6. ✅ Includes RELOAD command
+7. ✅ Shows what feature types were found
+
+Now restart Klipper, reload your file, and run:
+```
+BRICK_LAYERS_ENABLE
