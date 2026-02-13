@@ -120,10 +120,10 @@ class BrickLayers:
         logging.info("BrickLayers enabled via command")
         
         # If we have a loaded file but no transform map, preprocess now
-        if self.sdcard and hasattr(self.sdcard, 'file_path') and self.sdcard.file_path:
+        if self.sdcard and hasattr(self.sdcard, 'file_path') and self.sdcard.file_path():
             if not self.transform_map:
                 gcmd.respond_info("BrickLayers: Preprocessing current file...")
-                self._preprocess_gcode_file(self.sdcard.file_path)
+                self._preprocess_gcode_file(self.sdcard.file_path())
     
     def cmd_DISABLE(self, gcmd):
         """Disable brick layering"""
@@ -163,12 +163,12 @@ class BrickLayers:
             gcmd.respond_info("BrickLayers: No virtual_sdcard available")
             return
         
-        if not hasattr(self.sdcard, 'file_path') or not self.sdcard.file_path:
+        if not hasattr(self.sdcard, 'file_path') or not self.sdcard.file_path():
             gcmd.respond_info("BrickLayers: No file currently loaded")
             return
         
-        gcmd.respond_info(f"BrickLayers: Reprocessing {self.sdcard.file_path}...")
-        self._preprocess_gcode_file(self.sdcard.file_path)
+        gcmd.respond_info(f"BrickLayers: Reprocessing {self.sdcard.file_path()}...")
+        self._preprocess_gcode_file(self.sdcard.file_path())
         gcmd.respond_info("BrickLayers: Reload complete")
     
     def get_status(self, eventtime):
@@ -188,12 +188,12 @@ class BrickLayers:
     def _work_handler_wrapper(self, eventtime):
         """Wrapper for virtual_sdcard work handler to detect file loads"""
         # Check if a new file was loaded
-        if hasattr(self.sdcard, 'file_path') and self.sdcard.file_path:
-            if self.sdcard.file_path != self.last_preprocessed_file:
+        if hasattr(self.sdcard, 'file_path') and self.sdcard.file_path():
+            if self.sdcard.file_path() != self.last_preprocessed_file:
                 if self.enabled:
-                    logging.info(f"BrickLayers: New file detected: {self.sdcard.file_path}")
-                    self._preprocess_gcode_file(self.sdcard.file_path)
-                self.last_preprocessed_file = self.sdcard.file_path
+                    logging.info(f"BrickLayers: New file detected: {self.sdcard.file_path()}")
+                    self._preprocess_gcode_file(self.sdcard.file_path())
+                self.last_preprocessed_file = self.sdcard.file_path()
         
         # Call original handler
         return self.original_work_handler(eventtime)
