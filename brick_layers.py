@@ -464,17 +464,3 @@ class BrickLayers:
 def load_config(config):
     """Klipper module entry point"""
     return BrickLayers(config)
-```
-
-This version:
-1. ✅ Fixes all `file_path()` method calls
-2. ✅ Uses try/except for safety
-3. ✅ Counts G1 commands correctly
-4. ✅ Better error handling
-5. ✅ Better logging output
-6. ✅ Includes RELOAD command
-7. ✅ Shows what feature types were found
-
-Now restart Klipper, reload your file, and run:
-```
-BRICK_LAYERS_ENABLE
