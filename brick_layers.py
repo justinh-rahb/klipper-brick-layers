@@ -112,10 +112,10 @@ class BrickLayers:
 
         # Check if we need to preprocess
         if not self.transform_map:
-            if self.sdcard and self.sdcard.file_path:
+            if self.sdcard and self.sdcard.file_path():
                 gcmd.respond_info("BrickLayers: ENABLED - preprocessing G-code...")
                 logging.info("BrickLayers: Triggering catch-up preprocessing")
-                self._preprocess_gcode_file(self.sdcard.file_path)
+                self._preprocess_gcode_file(self.sdcard.file_path())
                 gcmd.respond_info(f"BrickLayers: Found {len(self.transform_map)} "
                                   f"transform points")
             else:
@@ -283,14 +283,14 @@ class BrickLayers:
     def _work_handler_wrapper(self, eventtime):
         """Wrapper for virtual_sdcard work handler"""
         # Check if a new file was just loaded
-        if self.sdcard.file_path and self.enabled:
+        if self.sdcard.file_path() and self.enabled:
             # Only preprocess if we haven't already
             if not hasattr(self, '_last_preprocessed_file'):
                 self._last_preprocessed_file = None
             
-            if self.sdcard.file_path != self._last_preprocessed_file:
-                self._preprocess_gcode_file(self.sdcard.file_path)
-                self._last_preprocessed_file = self.sdcard.file_path
+            if self.sdcard.file_path() != self._last_preprocessed_file:
+                self._preprocess_gcode_file(self.sdcard.file_path())
+                self._last_preprocessed_file = self.sdcard.file_path()
         
         # Call original handler
         return self.original_work_handler(eventtime)
